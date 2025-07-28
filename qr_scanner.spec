@@ -2,61 +2,51 @@
 
 block_cipher = None
 
-# 数据文件和资源
+# 添加pyzbar相关的数据文件和动态链接库
+import os
+import sys
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
+# 收集pyzbar的数据文件和动态库
+pyzbar_datas = collect_data_files('pyzbar')
+pyzbar_binaries = collect_dynamic_libs('pyzbar')
+
 datas = [
     ('README.md', '.'),
     ('CAMERA_CONTROL_GUIDE.md', '.'),
 ]
 
-# 尝试包含配置文件（如果存在）
-import os
+# 添加pyzbar的数据文件
+datas.extend(pyzbar_datas)
+
+# 添加配置文件（如果存在）
 if os.path.exists('camera_config.json'):
     datas.append(('camera_config.json', '.'))
 
-# 隐藏导入（解决一些依赖问题）
+# 包含所有必要的隐藏导入
 hiddenimports = [
-    'cv2',
-    'numpy',
-    'pyzbar',
-    'pyzbar.pyzbar',
-    'socket',
-    'json',
-    'time',
-    'warnings',
-    'logging',
-    'datetime',
-    'threading',
-    'queue',
-    're',
-    'contextlib',
-    'io',
+    'cv2', 'numpy', 'pyzbar', 'pyzbar.pyzbar', 'pyzbar.wrapper', 'pyzbar.zbar_library',
+    'socket', 'json', 'time', 'warnings', 'logging', 'datetime', 'threading', 'queue', 're',
+    'contextlib', 'io', 'ctypes', 'ctypes.util',
+    # OpenCV相关
+    'cv2.cv2',
+    # pyzbar相关的所有依赖
+    'pyzbar.locations',
 ]
 
 a = Analysis(
     ['qr_scanner_optimized.py'],
     pathex=[],
-    binaries=[],
+    binaries=pyzbar_binaries,  # 包含pyzbar的动态库
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # 排除不需要的模块以减小文件大小
-        'tkinter',
-        'matplotlib',
-        'scipy',
-        'pandas',
-        'PIL',
-        'IPython',
-        'jupyter',
-        'notebook',
-        'tornado',
-        'zmq',
-        'pyqt5',
-        'pyqt6',
-        'pyside2',
-        'pyside6',
+        'tkinter', 'matplotlib', 'scipy', 'pandas', 'PIL', 'IPython',
+        'jupyter', 'notebook', 'tornado', 'zmq', 'pyqt5', 'pyqt6',
+        'pyside2', 'pyside6',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -77,10 +67,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,  # 使用UPX压缩减小文件大小
+    upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # 保留控制台窗口以显示调试信息
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
