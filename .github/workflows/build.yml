@@ -149,53 +149,47 @@ jobs:
         
     - name: Create Release (if tag)
       if: startsWith(github.ref, 'refs/tags/')
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: QR Scanner ${{ github.ref }}
-        body: |
-          ## QR Scanner Windows版本
-          
-          ### 📦 下载
-          - **QRScanner-Windows.zip**: 完整Windows可执行包
-          
-          ### 🚀 使用方法
-          1. 下载并解压 QRScanner-Windows.zip
-          2. 双击 `start_qr_scanner.bat` 启动程序
-          3. 或直接运行 `QRScanner.exe`
-          
-          ### ✨ 功能特点
-          - 支持4K分辨率QR码扫描
-          - 智能性能优化
-          - OpenCV + pyzbar双重检测
-          - 自适应区域检测
-          - 实时性能监控
-          
-          ### 📋 系统要求
-          - Windows 10/11 (64位)
-          - 支持USB摄像头或内置摄像头
-          - 建议4GB以上内存
-          
-          ### 🎮 控制按键
-          - `q`: 退出程序
-          - `d`: 切换调试模式
-          - `r`: 调整检测区域
-          - `i`: 显示摄像头信息
-          - `h`: 显示性能提示
-          
-          详细使用说明请参考包内的文档。
-        draft: false
-        prerelease: false
+      run: |
+        # 提取标签名
+        $tagName = $env:GITHUB_REF -replace 'refs/tags/', ''
+        $releaseName = "QR Scanner $tagName"
         
-    - name: Upload Release Asset
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: actions/upload-release-asset@v1
+        # 创建release描述
+        $releaseBody = @"
+        ## QR Scanner Windows版本
+        
+        ### 📦 下载
+        - **QRScanner-Windows.zip**: 完整Windows可执行包
+        
+        ### 🚀 使用方法
+        1. 下载并解压 QRScanner-Windows.zip
+        2. 双击 ``start_qr_scanner.bat`` 启动程序
+        3. 或直接运行 ``QRScanner.exe``
+        
+        ### ✨ 功能特点
+        - 支持4K分辨率QR码扫描
+        - 智能性能优化
+        - OpenCV + pyzbar双重检测
+        - 自适应区域检测
+        - 实时性能监控
+        
+        ### 📋 系统要求
+        - Windows 10/11 (64位)
+        - 支持USB摄像头或内置摄像头
+        - 建议4GB以上内存
+        
+        ### 🎮 控制按键
+        - ``q``: 退出程序
+        - ``d``: 切换调试模式
+        - ``r``: 调整检测区域
+        - ``i``: 显示摄像头信息
+        - ``h``: 显示性能提示
+        
+        详细使用说明请参考包内的文档。
+        "@
+        
+        # 使用GitHub CLI创建release
+        gh release create $tagName QRScanner-Windows.zip --title $releaseName --notes $releaseBody --latest
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./QRScanner-Windows.zip
-        asset_name: QRScanner-Windows.zip
-        asset_content_type: application/zip 
+      shell: pwsh 
