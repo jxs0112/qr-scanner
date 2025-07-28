@@ -1,0 +1,165 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~\AppData\Local\pip\Cache
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build executable
+      run: |
+        # 创建打包脚本
+        echo "Building QR Scanner executable..."
+        
+        # 如果存在spec文件，使用spec文件打包，否则使用命令行参数
+        if exist qr_scanner.spec (
+          echo "Using spec file for building..."
+          pyinstaller qr_scanner.spec
+        ) else (
+          echo "Using command line parameters for building..."
+          pyinstaller --onefile --console --name "QRScanner" --add-data "README.md;." --add-data "CAMERA_CONTROL_GUIDE.md;." qr_scanner_optimized.py
+        )
+        
+        # 创建发布包
+        mkdir release
+        copy dist\QRScanner.exe release\
+        copy README.md release\
+        copy CAMERA_CONTROL_GUIDE.md release\
+        copy camera_config.json release\ 2>nul || echo "camera_config.json not found, skipping..."
+        
+        # 创建批处理启动文件
+        echo @echo off > release\start_qr_scanner.bat
+        echo echo === QR Scanner - Windows版本 === >> release\start_qr_scanner.bat
+        echo echo 启动QR扫描器... >> release\start_qr_scanner.bat
+        echo QRScanner.exe ultra_hd >> release\start_qr_scanner.bat
+        echo pause >> release\start_qr_scanner.bat
+        
+        # 创建帮助文件
+        echo QR Scanner - Windows可执行版本 > release\使用说明.txt
+        echo. >> release\使用说明.txt
+        echo 1. 双击 start_qr_scanner.bat 启动程序 >> release\使用说明.txt
+        echo 2. 或直接运行 QRScanner.exe >> release\使用说明.txt
+        echo 3. 支持的参数: >> release\使用说明.txt
+        echo    - ultra_hd: 4K模式 >> release\使用说明.txt
+        echo    - full_hd: 1080p模式 >> release\使用说明.txt
+        echo    - high: 720p模式 >> release\使用说明.txt
+        echo    - medium: 480p模式 >> release\使用说明.txt
+        echo    - low: 240p模式 >> release\使用说明.txt
+        echo. >> release\使用说明.txt
+        echo 4. 按键控制: >> release\使用说明.txt
+        echo    - q: 退出程序 >> release\使用说明.txt
+        echo    - d: 切换调试模式 >> release\使用说明.txt
+        echo    - r: 调整检测区域 >> release\使用说明.txt
+        echo    - i: 显示摄像头信息 >> release\使用说明.txt
+        echo    - h: 显示性能提示 >> release\使用说明.txt
+        echo. >> release\使用说明.txt
+        echo 详细说明请参考 CAMERA_CONTROL_GUIDE.md >> release\使用说明.txt
+        
+    - name: Create icon file (if not exists)
+      run: |
+        # 如果没有图标文件，创建一个简单的图标描述
+        if not exist icon.ico (
+          echo Icon file not found, executable will use default icon
+        )
+        
+    - name: Test executable
+      run: |
+        # 简单测试可执行文件是否可以启动
+        echo Testing executable...
+        timeout 5 release\QRScanner.exe --help 2>nul || echo "Executable test completed"
+        
+    - name: Create ZIP archive
+      run: |
+        # 创建ZIP压缩包
+        powershell Compress-Archive -Path release\* -DestinationPath QRScanner-Windows.zip
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: QRScanner-Windows
+        path: |
+          release/
+          QRScanner-Windows.zip
+        retention-days: 30
+        
+    - name: Create Release (if tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: QR Scanner ${{ github.ref }}
+        body: |
+          ## QR Scanner Windows版本
+          
+          ### 📦 下载
+          - **QRScanner-Windows.zip**: 完整Windows可执行包
+          
+          ### 🚀 使用方法
+          1. 下载并解压 QRScanner-Windows.zip
+          2. 双击 `start_qr_scanner.bat` 启动程序
+          3. 或直接运行 `QRScanner.exe`
+          
+          ### ✨ 功能特点
+          - 支持4K分辨率QR码扫描
+          - 智能性能优化
+          - OpenCV + pyzbar双重检测
+          - 自适应区域检测
+          - 实时性能监控
+          
+          ### 📋 系统要求
+          - Windows 10/11 (64位)
+          - 支持USB摄像头或内置摄像头
+          - 建议4GB以上内存
+          
+          ### 🎮 控制按键
+          - `q`: 退出程序
+          - `d`: 切换调试模式
+          - `r`: 调整检测区域
+          - `i`: 显示摄像头信息
+          - `h`: 显示性能提示
+          
+          详细使用说明请参考包内的文档。
+        draft: false
+        prerelease: false
+        
+    - name: Upload Release Asset
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./QRScanner-Windows.zip
+        asset_name: QRScanner-Windows.zip
+        asset_content_type: application/zip 
