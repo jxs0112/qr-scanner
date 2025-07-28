@@ -47,18 +47,37 @@ jobs:
         # 安装额外的依赖来处理pyzbar问题
         pip install pyinstaller-hooks-contrib
         
+        # 检查构建方式
         if (Test-Path "qr_scanner.spec") {
           Write-Host "Using spec file for building..."
-          # 确保hook文件在正确位置
-          if (Test-Path "hook-pyzbar.py") {
-            pyinstaller --additional-hooks-dir=. qr_scanner.spec
-          } else {
-            pyinstaller qr_scanner.spec
-          }
+          pyinstaller qr_scanner.spec
         } else {
           Write-Host "Using command line parameters for building..."
-          pyinstaller --onefile --console --name "QRScanner" --add-data "README.md;." --add-data "CAMERA_CONTROL_GUIDE.md;." --collect-all pyzbar qr_scanner_optimized.py
+          pyinstaller --onefile --console --name "QRScanner" --add-data "README.md;." --add-data "CAMERA_CONTROL_GUIDE.md;." --collect-all pyzbar --additional-hooks-dir=. qr_scanner_optimized.py
         }
+        
+        # 检查构建结果
+        if (-not (Test-Path "dist\QRScanner.exe")) {
+          Write-Host "Build failed! Checking dist directory contents:"
+          if (Test-Path "dist") {
+            Get-ChildItem -Path "dist" -Recurse
+          } else {
+            Write-Host "dist directory does not exist!"
+          }
+          
+          Write-Host "Checking build directory contents:"
+          if (Test-Path "build") {
+            Get-ChildItem -Path "build" -Recurse
+          }
+          
+          # 尝试查找任何exe文件
+          Write-Host "Looking for any exe files:"
+          Get-ChildItem -Path "." -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue
+          
+          throw "PyInstaller build failed - QRScanner.exe not found"
+        }
+        
+        Write-Host "Build successful! QRScanner.exe found."
         
         # 创建发布包
         New-Item -ItemType Directory -Force -Path "release"
