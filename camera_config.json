@@ -3,7 +3,23 @@
   "default_camera_index": 0,
   "udp_host": "127.0.0.1",
   "udp_port": 8888,
-  "send_interval": 1.0,
-  "custom_resolutions": {},
-  "camera_preferences": {}
+  "send_interval": 1.5,
+  "target_fps": 30,
+  "debug_mode": false,
+  "custom_resolutions": {
+    "custom_4k": [3840, 2160],
+    "custom_2k": [2560, 1440]
+  },
+  "camera_preferences": {},
+  "available_cameras": [],
+  "performance": {
+    "adaptive_skip_interval": 2,
+    "detection_region_scale": 0.4,
+    "use_simple_preprocess": true,
+    "use_opencv_qr": true,
+    "dynamic_resolution": true,
+    "detection_scales": [1.0, 0.7, 0.5],
+    "min_confidence": 2,
+    "cache_ttl": 5
+  }
 }

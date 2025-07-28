@@ -3,6 +3,7 @@
 """
 优化版二维码识别程序
 专门针对4K分辨率下的性能优化
+支持配置文件和多摄像头
 """
 
 import cv2
@@ -11,6 +12,7 @@ import json
 import time
 import warnings
 import logging
+import os
 from datetime import datetime
 from pyzbar import pyzbar
 import threading
@@ -20,6 +22,132 @@ import numpy as np
 # 设置日志级别，减少zbar的调试输出
 logging.getLogger().setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="pyzbar")
+
+class ConfigManager:
+    """配置管理器"""
+    
+    DEFAULT_CONFIG = {
+        "default_resolution": "ultra_hd",
+        "default_camera_index": 0,
+        "udp_host": "127.0.0.1",
+        "udp_port": 8888,
+        "send_interval": 1.0,
+        "target_fps": 30,
+        "debug_mode": False,
+        "custom_resolutions": {},
+        "camera_preferences": {},
+        "available_cameras": [],
+        "performance": {
+            "adaptive_skip_interval": 2,
+            "detection_region_scale": 0.4,
+            "use_simple_preprocess": True,
+            "use_opencv_qr": True,
+            "dynamic_resolution": True,
+            "detection_scales": [1.0, 0.7, 0.5],
+            "min_confidence": 2,
+            "cache_ttl": 5
+        }
+    }
+    
+    def __init__(self, config_file="camera_config.json"):
+        self.config_file = config_file
+        self.config = self.load_config()
+        
+    def load_config(self):
+        """加载配置文件"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    loaded_config = json.load(f)
+                
+                # 合并默认配置和加载的配置
+                config = self.DEFAULT_CONFIG.copy()
+                self._merge_dict(config, loaded_config)
+                
+                print(f"✓ 已加载配置文件: {self.config_file}")
+                return config
+            else:
+                print(f"⚠️  配置文件不存在，使用默认配置")
+                return self.DEFAULT_CONFIG.copy()
+                
+        except Exception as e:
+            print(f"⚠️  加载配置文件失败: {e}")
+            print("使用默认配置")
+            return self.DEFAULT_CONFIG.copy()
+    
+    def _merge_dict(self, base_dict, update_dict):
+        """递归合并字典"""
+        for key, value in update_dict.items():
+            if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
+                self._merge_dict(base_dict[key], value)
+            else:
+                base_dict[key] = value
+    
+    def save_config(self):
+        """保存配置文件"""
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+            print(f"✓ 配置已保存到: {self.config_file}")
+        except Exception as e:
+            print(f"⚠️  保存配置失败: {e}")
+    
+    def get(self, key, default=None):
+        """获取配置值，支持点分隔的键"""
+        keys = key.split('.')
+        value = self.config
+        for k in keys:
+            if isinstance(value, dict) and k in value:
+                value = value[k]
+            else:
+                return default
+        return value
+    
+    def set(self, key, value):
+        """设置配置值，支持点分隔的键"""
+        keys = key.split('.')
+        config = self.config
+        for k in keys[:-1]:
+            if k not in config:
+                config[k] = {}
+            config = config[k]
+        config[keys[-1]] = value
+    
+    def detect_available_cameras(self):
+        """检测可用的摄像头"""
+        available_cameras = []
+        print("🔍 正在检测可用摄像头...")
+        
+        for i in range(10):  # 检测前10个摄像头索引
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                # 获取摄像头信息
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                backend = cap.getBackendName()
+                
+                camera_info = {
+                    "index": i,
+                    "resolution": f"{width}x{height}",
+                    "fps": fps,
+                    "backend": backend,
+                    "name": f"Camera {i}"
+                }
+                
+                available_cameras.append(camera_info)
+                print(f"  ✓ 摄像头 {i}: {width}x{height} @ {fps:.1f}fps ({backend})")
+                cap.release()
+            else:
+                cap.release()
+        
+        if not available_cameras:
+            print("  ⚠️  未检测到可用摄像头")
+        else:
+            print(f"  📷 共检测到 {len(available_cameras)} 个摄像头")
+        
+        self.config["available_cameras"] = available_cameras
+        return available_cameras
 
 class OptimizedQRCodeScanner:
     # 预定义的分辨率选项
@@ -31,48 +159,63 @@ class OptimizedQRCodeScanner:
         'ultra_hd': (3840, 2160)
     }
     
-    def __init__(self, udp_host='127.0.0.1', udp_port=8888, resolution='ultra_hd', 
-                 camera_index=0, debug_mode=False, target_fps=30):
+    def __init__(self, udp_host=None, udp_port=None, resolution=None, 
+                 camera_index=None, debug_mode=None, target_fps=None, config_file="camera_config.json"):
         """
         初始化优化版二维码扫描器
+        参数可以从配置文件加载，命令行参数会覆盖配置文件设置
         """
-        self.udp_host = udp_host
-        self.udp_port = udp_port
+        # 初始化配置管理器
+        self.config_manager = ConfigManager(config_file)
+        
+        # 从配置文件获取默认值，命令行参数优先
+        self.udp_host = udp_host or self.config_manager.get('udp_host')
+        self.udp_port = udp_port or self.config_manager.get('udp_port')
+        self.debug_mode = debug_mode if debug_mode is not None else self.config_manager.get('debug_mode')
+        self.target_fps = target_fps or self.config_manager.get('target_fps')
+        
+        # 摄像头索引处理
+        camera_index = camera_index if camera_index is not None else self.config_manager.get('default_camera_index')
+        
+        # 分辨率处理
+        if resolution is None:
+            resolution = self.config_manager.get('default_resolution')
+        
+        # 初始化socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.last_qr_data = None
         self.last_send_time = 0
-        self.send_interval = 1.5  # 减少重复发送间隔
-        self.debug_mode = debug_mode
-        self.target_fps = target_fps
+        self.send_interval = self.config_manager.get('send_interval')
         
-        # 高级优化参数
+        # 从配置文件加载性能参数
+        perf_config = self.config_manager.get('performance', {})
         self.frame_skip_count = 0
-        self.adaptive_skip_interval = 2  # 自适应跳帧间隔
-        self.detection_region_scale = 0.4  # 更小的检测区域（40%）
-        self.use_simple_preprocess = True
-        self.use_opencv_qr = True  # 使用OpenCV的QR检测器（更快）
-        self.dynamic_resolution = True  # 动态分辨率调整
+        self.adaptive_skip_interval = perf_config.get('adaptive_skip_interval', 2)
+        self.detection_region_scale = perf_config.get('detection_region_scale', 0.4)
+        self.use_simple_preprocess = perf_config.get('use_simple_preprocess', True)
+        self.use_opencv_qr = perf_config.get('use_opencv_qr', True)
+        self.dynamic_resolution = perf_config.get('dynamic_resolution', True)
         
         # 摄像头控制参数（仅显示，macOS AVFOUNDATION后端不支持软件控制）
         self.camera_backend = "unknown"
-        self.supports_manual_control = False  # 是否支持手动控制
-        self.show_camera_warning = True  # 是否显示摄像头控制警告
+        self.supports_manual_control = False
+        self.show_camera_warning = True
         
         # 性能监控
         self.fps_history = []
-        self.performance_check_interval = 60  # 每60帧检查一次性能
-        self.target_min_fps = 15  # 目标最低FPS
+        self.performance_check_interval = 60
+        self.target_min_fps = 15
         
         # 多尺度检测
-        self.detection_scales = [1.0, 0.7, 0.5]  # 多尺度检测
+        self.detection_scales = perf_config.get('detection_scales', [1.0, 0.7, 0.5])
         self.current_scale_index = 0
         
         # 识别稳定性跟踪
         self.qr_confidence = {}
-        self.min_confidence = 2
+        self.min_confidence = perf_config.get('min_confidence', 2)
         self.frame_count = 0
         
-        # 预编译正则表达式（如果需要内容过滤）
+        # 预编译正则表达式
         import re
         self.url_pattern = re.compile(r'https?://[^\s]+')
         
@@ -81,12 +224,15 @@ class OptimizedQRCodeScanner:
         
         # 缓存最近的检测结果
         self.detection_cache = {}
-        self.cache_ttl = 5  # 缓存5帧
+        self.cache_ttl = perf_config.get('cache_ttl', 5)
         
         # 解析分辨率设置
+        custom_resolutions = self.config_manager.get('custom_resolutions', {})
+        all_resolutions = {**self.RESOLUTIONS, **custom_resolutions}
+        
         if isinstance(resolution, str):
-            if resolution in self.RESOLUTIONS:
-                self.width, self.height = self.RESOLUTIONS[resolution]
+            if resolution in all_resolutions:
+                self.width, self.height = all_resolutions[resolution]
             else:
                 print(f"警告：未知的分辨率设置 '{resolution}'，使用默认分辨率")
                 self.width, self.height = self.RESOLUTIONS['ultra_hd']
@@ -96,10 +242,27 @@ class OptimizedQRCodeScanner:
             print(f"警告：无效的分辨率格式，使用默认分辨率")
             self.width, self.height = self.RESOLUTIONS['ultra_hd']
         
+        # 检测可用摄像头
+        available_cameras = self.config_manager.detect_available_cameras()
+        
+        # 验证摄像头索引
+        if available_cameras:
+            available_indices = [cam['index'] for cam in available_cameras]
+            if camera_index not in available_indices:
+                print(f"⚠️  指定的摄像头索引 {camera_index} 不可用")
+                print(f"可用摄像头: {available_indices}")
+                camera_index = available_indices[0]
+                print(f"使用摄像头: {camera_index}")
+                # 更新配置文件
+                self.config_manager.set('default_camera_index', camera_index)
+        
         # 初始化摄像头
         self.cap = cv2.VideoCapture(camera_index)
         if not self.cap.isOpened():
             raise RuntimeError(f"无法打开摄像头 {camera_index}")
+        
+        # 保存当前摄像头索引
+        self.current_camera_index = camera_index
         
         # 检测摄像头能力并优化设置
         self.detect_camera_capabilities()
@@ -110,11 +273,22 @@ class OptimizedQRCodeScanner:
         actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
         
+        # 保存摄像头信息到配置
+        camera_info = {
+            "index": camera_index,
+            "resolution": f"{actual_width}x{actual_height}",
+            "fps": actual_fps,
+            "backend": self.camera_backend
+        }
+        self.config_manager.set(f'camera_preferences.camera_{camera_index}', camera_info)
+        
         print(f"优化版二维码扫描器已初始化")
-        print(f"UDP目标: {udp_host}:{udp_port}")
+        print(f"UDP目标: {self.udp_host}:{self.udp_port}")
+        print(f"使用摄像头: {camera_index}")
         print(f"实际分辨率: {actual_width}x{actual_height}")
         print(f"实际帧率: {actual_fps:.1f} FPS")
         print(f"摄像头后端: {self.camera_backend}")
+        print(f"配置文件: {self.config_manager.config_file}")
         print(f"高级性能优化:")
         print(f"  - 自适应跳帧: 初始每{self.adaptive_skip_interval + 1}帧检测一次")
         print(f"  - 检测区域: 中心{self.detection_region_scale*100:.0f}%区域")
@@ -595,6 +769,111 @@ class OptimizedQRCodeScanner:
         
         return frame
     
+    def switch_camera(self, direction='next'):
+        """切换摄像头"""
+        available_cameras = self.config_manager.get('available_cameras', [])
+        if len(available_cameras) <= 1:
+            print("⚠️  只有一个摄像头可用，无法切换")
+            return
+        
+        current_index = int(self.cap.get(cv2.CAP_PROP_POS_MSEC))  # 获取当前摄像头索引的替代方法
+        current_camera_info = None
+        
+        # 找到当前摄像头在列表中的位置
+        for i, cam in enumerate(available_cameras):
+            if cam['index'] == getattr(self, 'current_camera_index', 0):
+                current_camera_info = cam
+                current_pos = i
+                break
+        else:
+            current_pos = 0
+        
+        # 计算新的摄像头位置
+        if direction == 'next':
+            new_pos = (current_pos + 1) % len(available_cameras)
+        else:  # prev
+            new_pos = (current_pos - 1) % len(available_cameras)
+        
+        new_camera = available_cameras[new_pos]
+        new_camera_index = new_camera['index']
+        
+        print(f"🔄 切换摄像头: {getattr(self, 'current_camera_index', 0)} -> {new_camera_index}")
+        
+        # 释放当前摄像头
+        self.cap.release()
+        
+        # 打开新摄像头
+        self.cap = cv2.VideoCapture(new_camera_index)
+        if not self.cap.isOpened():
+            print(f"❌ 无法打开摄像头 {new_camera_index}")
+            # 回退到原摄像头
+            self.cap = cv2.VideoCapture(getattr(self, 'current_camera_index', 0))
+            return
+        
+        # 更新当前摄像头索引
+        self.current_camera_index = new_camera_index
+        
+        # 重新优化设置
+        self.detect_camera_capabilities()
+        self.optimize_camera_settings()
+        
+        # 更新配置
+        self.config_manager.set('default_camera_index', new_camera_index)
+        
+        # 显示新摄像头信息
+        actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        
+        print(f"✓ 摄像头切换成功:")
+        print(f"  索引: {new_camera_index}")
+        print(f"  分辨率: {actual_width}x{actual_height}")
+        print(f"  帧率: {actual_fps:.1f} FPS")
+        print(f"  后端: {self.camera_backend}")
+    
+    def list_cameras(self):
+        """列出所有可用摄像头"""
+        available_cameras = self.config_manager.get('available_cameras', [])
+        
+        if not available_cameras:
+            print("⚠️  未检测到可用摄像头")
+            return
+        
+        print(f"\n📷 可用摄像头列表:")
+        current_index = getattr(self, 'current_camera_index', self.config_manager.get('default_camera_index'))
+        
+        for i, cam in enumerate(available_cameras):
+            marker = "👉" if cam['index'] == current_index else "  "
+            print(f"{marker} 摄像头 {cam['index']}: {cam['resolution']} @ {cam['fps']:.1f}fps ({cam['backend']})")
+        
+        print(f"\n💡 使用 'n'/'p' 键切换摄像头")
+        print()
+    
+    def save_current_config(self):
+        """保存当前配置到文件"""
+        # 更新性能配置
+        perf_config = {
+            'adaptive_skip_interval': self.adaptive_skip_interval,
+            'detection_region_scale': self.detection_region_scale,
+            'use_simple_preprocess': self.use_simple_preprocess,
+            'use_opencv_qr': self.use_opencv_qr,
+            'dynamic_resolution': self.dynamic_resolution,
+            'detection_scales': self.detection_scales,
+            'min_confidence': self.min_confidence,
+            'cache_ttl': self.cache_ttl
+        }
+        
+        self.config_manager.set('performance', perf_config)
+        self.config_manager.set('send_interval', self.send_interval)
+        self.config_manager.set('debug_mode', self.debug_mode)
+        
+        # 保存当前摄像头索引
+        current_index = getattr(self, 'current_camera_index', self.config_manager.get('default_camera_index'))
+        self.config_manager.set('default_camera_index', current_index)
+        
+        self.config_manager.save_config()
+        print("✓ 当前配置已保存")
+
     def run(self):
         """运行扫描器"""
         fps_counter = 0
@@ -665,6 +944,18 @@ class OptimizedQRCodeScanner:
                 elif key == ord('w'):  # 切换警告显示
                     self.show_camera_warning = not self.show_camera_warning
                     print(f"摄像头警告: {'显示' if self.show_camera_warning else '隐藏'}")
+                elif key == ord('n'):  # 切换到下一个摄像头
+                    self.switch_camera('next')
+                elif key == ord('p'):  # 切换到上一个摄像头
+                    self.switch_camera('prev')
+                elif key == ord('l'):  # 列出可用摄像头
+                    self.list_cameras()
+                elif key == ord('z'):  # 保存当前配置
+                    self.save_current_config()
+                elif key == ord('x'):  # 重新检测摄像头
+                    self.config_manager.detect_available_cameras()
+                    self.config_manager.save_config()
+                    print("摄像头检测完成并保存到配置文件")
                     
         except KeyboardInterrupt:
             print("\n程序被用户中断")
@@ -687,12 +978,14 @@ def main():
     
     print("=== 高级优化版二维码识别程序 ===")
     print("优化功能:")
+    print("  - 配置文件支持和自动保存")
+    print("  - 多摄像头检测和切换")
     print("  - 自适应跳帧和区域调整")
     print("  - OpenCV + pyzbar双重检测")
     print("  - 多尺度检测")
     print("  - 智能结果缓存")
     print("  - 实时性能监控")
-    print("\n按键控制:")
+    print("\n基本控制:")
     print("  q: 退出程序")
     print("  d: 切换调试模式")
     print("  s: 切换简化预处理")
@@ -700,16 +993,23 @@ def main():
     print("  a: 切换自适应优化")
     print("  r: 调整检测区域大小")
     print("  c: 清除检测缓存")
-    print("\n信息显示:")
+    print("\n摄像头控制:")
+    print("  n: 切换到下一个摄像头")
+    print("  p: 切换到上一个摄像头")
+    print("  l: 列出所有可用摄像头")
+    print("  x: 重新检测摄像头")
+    print("\n信息和配置:")
     print("  i: 显示摄像头信息")
     print("  h: 显示性能提示")
     print("  w: 切换警告显示")
+    print("  z: 保存当前配置到文件")
     
     # 解析参数
-    resolution = 'ultra_hd'
-    camera_index = 0
-    debug_mode = False
-    target_fps = 30
+    resolution = None
+    camera_index = None
+    debug_mode = None
+    target_fps = None
+    config_file = "camera_config.json"
     
     args = sys.argv[1:]
     i = 0
@@ -723,23 +1023,44 @@ def main():
                 args.pop(i)
             except ValueError:
                 print(f"警告：无效的目标帧率")
+                i += 1
+        elif args[i].startswith('--config='):
+            config_file = args[i].replace('--config=', '')
+            args.pop(i)
+        elif args[i].startswith('--camera='):
+            try:
+                camera_index = int(args[i].replace('--camera=', ''))
+                args.pop(i)
+            except ValueError:
+                print(f"警告：无效的摄像头索引")
+                i += 1
         else:
             i += 1
     
+    # 剩余参数作为分辨率
     if len(args) > 0:
         resolution = args[0]
-    if len(args) > 1:
+    if len(args) > 1 and camera_index is None:
         try:
             camera_index = int(args[1])
         except ValueError:
             print(f"警告：无效的摄像头索引")
     
-    UDP_HOST = '127.0.0.1'
-    UDP_PORT = 8888
+    UDP_HOST = None  # 从配置文件读取
+    UDP_PORT = None  # 从配置文件读取
+    
+    print(f"\n配置文件: {config_file}")
     
     try:
-        scanner = OptimizedQRCodeScanner(UDP_HOST, UDP_PORT, resolution, 
-                                       camera_index, debug_mode, target_fps)
+        scanner = OptimizedQRCodeScanner(
+            udp_host=UDP_HOST, 
+            udp_port=UDP_PORT, 
+            resolution=resolution,
+            camera_index=camera_index, 
+            debug_mode=debug_mode, 
+            target_fps=target_fps,
+            config_file=config_file
+        )
         scanner.run()
     except RuntimeError as e:
         print(f"初始化失败: {e}")
