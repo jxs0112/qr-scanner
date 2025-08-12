@@ -760,10 +760,10 @@ class OptimizedQRCodeScanner:
                     if time_gone > self.page_stable_time * 0.5:  # 如果消失超过稳定时间的一半
                         disappeared_qrs.add(qr_data)
                         if qr_data == self.last_stable_qr:
-                            print(f"📖 翻页检测: QR码 '{qr_data}' 已消失 {time_gone:.2f} 秒")
+                            print(f"📖 Page Detection: QR code '{qr_data}' disappeared for {time_gone:.2f}s")
                             if time_gone > self.page_stable_time:
                                 self.page_turning_in_progress = False
-                                print(f"📖 翻页完成: QR码 '{qr_data}' 已消失超过 {self.page_stable_time} 秒")
+                                print(f"📖 Page Turn Complete: QR code '{qr_data}' disappeared for over {self.page_stable_time}s")
             
             # 清理长时间未见的二维码记录
             for qr_data in disappeared_qrs:
@@ -783,15 +783,15 @@ class OptimizedQRCodeScanner:
             if self.page_turning_mode:
                 if qr_data not in self.qr_first_seen_time:
                     self.qr_first_seen_time[qr_data] = current_time
-                    print(f"📖 翻页检测: 新的QR码 '{qr_data}' 出现")
+                    print(f"📖 Page Detection: New QR code '{qr_data}' appeared")
                 self.qr_last_seen_time[qr_data] = current_time
                 
                 # 检查二维码是否稳定显示
                 time_visible = current_time - self.qr_first_seen_time[qr_data]
                 if time_visible >= self.page_stable_time and qr_data != self.last_stable_qr:
-                    print(f"📖 页面稳定: QR码 '{qr_data}' 已稳定显示 {time_visible:.2f} 秒")
+                    print(f"📖 Page Stable: QR code '{qr_data}' has been stable for {time_visible:.2f}s")
                     if self.last_stable_qr is not None:
-                        print(f"📖 翻页完成: 从 '{self.last_stable_qr}' 到 '{qr_data}'")
+                        print(f"📖 Page Turn Complete: From '{self.last_stable_qr}' to '{qr_data}'")
                         self.page_turning_in_progress = False
                     self.last_stable_qr = qr_data
         
@@ -816,9 +816,9 @@ class OptimizedQRCodeScanner:
                 is_stable = qr_data == self.last_stable_qr
                 if not is_stable or self.page_turning_in_progress:
                     send_allowed = False
-                    status = "翻页中" if self.page_turning_in_progress else "未稳定"
+                    status = "Turning" if self.page_turning_in_progress else "Not stable"
                     if self.debug_mode:
-                        print(f"⏳ 跳过发送 QR码 '{qr_data}' ({status})")
+                        print(f"⏳ Skip sending QR code '{qr_data}' ({status})")
             
             should_send = (
                 send_allowed and
@@ -863,9 +863,9 @@ class OptimizedQRCodeScanner:
                 time_visible = current_time - self.qr_first_seen_time.get(qr_data, current_time)
                 status = ""
                 if qr_data == self.last_stable_qr:
-                    status = "稳定"
+                    status = "Stable"
                 elif self.page_turning_in_progress:
-                    status = "翻页中"
+                    status = "Turning"
                 else:
                     status = f"{time_visible:.1f}s"
                 
@@ -911,12 +911,13 @@ class OptimizedQRCodeScanner:
             
             # 在翻页模式下显示状态信息
             if self.page_turning_mode:
-                status_text = f"翻页模式: {'翻页中' if self.page_turning_in_progress else '稳定'}"
+                status_text = f"Page Mode: {'Turning' if self.page_turning_in_progress else 'Stable'}"
                 cv2.putText(frame, status_text, (10, 30), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
                 if self.last_stable_qr:
-                    cv2.putText(frame, f"当前页: {self.last_stable_qr[:15]}", (10, 60), 
+                    page_text = f"Current: {self.last_stable_qr[:15]}"
+                    cv2.putText(frame, page_text, (10, 60), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         return frame
@@ -1118,10 +1119,10 @@ class OptimizedQRCodeScanner:
                             print("按Ctrl+C中断程序")
                     elif key == ord('b'):  # 切换翻页模式
                         self.page_turning_mode = not self.page_turning_mode
-                        print(f"翻页模式: {'开启' if self.page_turning_mode else '关闭'}")
+                        print(f"Page Turn Mode: {'Enabled' if self.page_turning_mode else 'Disabled'}")
                         if self.page_turning_mode:
-                            print("  - 翻页模式下，只有二维码稳定显示后才会发送UDP包")
-                            print(f"  - 稳定时间阈值: {self.page_stable_time}秒")
+                            print("  - In page turning mode, UDP packets will only be sent after QR code is stable")
+                            print(f"  - Stability threshold: {self.page_stable_time} seconds")
                             # 重置翻页检测状态
                             self.last_stable_qr = None
                             self.qr_first_seen_time = {}
@@ -1134,7 +1135,7 @@ class OptimizedQRCodeScanner:
                             self.page_stable_time = 2.0
                         else:
                             self.page_stable_time = 0.5
-                        print(f"页面稳定时间阈值: {self.page_stable_time}秒")
+                        print(f"Page Stability Threshold: {self.page_stable_time} seconds")
                 else:
                     # 无界面模式下，增加短暂延时避免CPU占用过高
                     time.sleep(0.001)

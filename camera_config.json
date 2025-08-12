@@ -8,7 +8,7 @@
   "debug_mode": false,
   "show_ui": true,
   "page_turning_mode": true,
-  "page_stable_time": 1.0,
+  "page_stable_time": 2.0,
   "custom_resolutions": {
     "custom_4k": [3840, 2160],
     "custom_2k": [2560, 1440]
