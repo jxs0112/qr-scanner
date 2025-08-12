@@ -183,6 +183,14 @@ class OptimizedQRCodeScanner:
         self.target_fps = target_fps or self.config_manager.get('target_fps')
         self.show_ui = self.config_manager.get('show_ui', True)  # 是否显示界面
         
+        # 翻页检测相关参数
+        self.page_turning_mode = self.config_manager.get('page_turning_mode', False)  # 翻页检测模式
+        self.page_stable_time = self.config_manager.get('page_stable_time', 1.0)  # 页面稳定时间(秒)
+        self.last_stable_qr = None  # 上次稳定的二维码
+        self.qr_first_seen_time = {}  # 记录二维码首次出现时间
+        self.qr_last_seen_time = {}  # 记录二维码最后一次出现时间
+        self.page_turning_in_progress = False  # 是否正在翻页
+        
         # 摄像头索引处理
         camera_index = camera_index if camera_index is not None else self.config_manager.get('default_camera_index')
         
@@ -740,13 +748,52 @@ class OptimizedQRCodeScanner:
             self.cache_detection_result(frame_hash, detected_qr_codes)
         
         # 更新置信度
+        current_time = time.time()
         current_qr_data = set(qr['data'] for qr in detected_qr_codes)
+        
+        # 翻页检测：检查不在当前帧中的二维码
+        if self.page_turning_mode:
+            disappeared_qrs = set()
+            for qr_data in self.qr_last_seen_time:
+                if qr_data not in current_qr_data:
+                    time_gone = current_time - self.qr_last_seen_time[qr_data]
+                    if time_gone > self.page_stable_time * 0.5:  # 如果消失超过稳定时间的一半
+                        disappeared_qrs.add(qr_data)
+                        if qr_data == self.last_stable_qr:
+                            print(f"📖 翻页检测: QR码 '{qr_data}' 已消失 {time_gone:.2f} 秒")
+                            if time_gone > self.page_stable_time:
+                                self.page_turning_in_progress = False
+                                print(f"📖 翻页完成: QR码 '{qr_data}' 已消失超过 {self.page_stable_time} 秒")
+            
+            # 清理长时间未见的二维码记录
+            for qr_data in disappeared_qrs:
+                if qr_data != self.last_stable_qr:  # 保留最后稳定的二维码记录
+                    if qr_data in self.qr_first_seen_time:
+                        del self.qr_first_seen_time[qr_data]
+                    if qr_data in self.qr_last_seen_time:
+                        del self.qr_last_seen_time[qr_data]
         
         for qr_data in current_qr_data:
             if qr_data in self.qr_confidence:
                 self.qr_confidence[qr_data] += 1
             else:
                 self.qr_confidence[qr_data] = 1
+                
+            # 翻页检测：记录二维码出现时间
+            if self.page_turning_mode:
+                if qr_data not in self.qr_first_seen_time:
+                    self.qr_first_seen_time[qr_data] = current_time
+                    print(f"📖 翻页检测: 新的QR码 '{qr_data}' 出现")
+                self.qr_last_seen_time[qr_data] = current_time
+                
+                # 检查二维码是否稳定显示
+                time_visible = current_time - self.qr_first_seen_time[qr_data]
+                if time_visible >= self.page_stable_time and qr_data != self.last_stable_qr:
+                    print(f"📖 页面稳定: QR码 '{qr_data}' 已稳定显示 {time_visible:.2f} 秒")
+                    if self.last_stable_qr is not None:
+                        print(f"📖 翻页完成: 从 '{self.last_stable_qr}' 到 '{qr_data}'")
+                        self.page_turning_in_progress = False
+                    self.last_stable_qr = qr_data
         
         # 减少未检测到的二维码的信心度
         for qr_data in list(self.qr_confidence.keys()):
@@ -761,7 +808,20 @@ class OptimizedQRCodeScanner:
             current_time = time.time()
             
             confidence = self.qr_confidence.get(qr_data, 0)
+            
+            # 翻页检测：判断是否可以发送UDP包
+            send_allowed = True
+            if self.page_turning_mode:
+                # 只有当二维码稳定显示且不在翻页过程中才发送
+                is_stable = qr_data == self.last_stable_qr
+                if not is_stable or self.page_turning_in_progress:
+                    send_allowed = False
+                    status = "翻页中" if self.page_turning_in_progress else "未稳定"
+                    if self.debug_mode:
+                        print(f"⏳ 跳过发送 QR码 '{qr_data}' ({status})")
+            
             should_send = (
+                send_allowed and
                 confidence >= self.min_confidence and
                 (qr_data != self.last_qr_data or current_time - self.last_send_time > self.send_interval)
             )
@@ -781,17 +841,38 @@ class OptimizedQRCodeScanner:
             points = np.array(points, dtype=np.int32)
             
             # 根据信心度和检测方法改变颜色
-            if confidence >= self.min_confidence:
-                color = (0, 255, 0)  # 绿色
+            if self.page_turning_mode:
+                if qr_data == self.last_stable_qr and not self.page_turning_in_progress:
+                    color = (0, 255, 0)  # 稳定页面，绿色
+                elif self.page_turning_in_progress:
+                    color = (0, 0, 255)  # 翻页中，红色
+                else:
+                    color = (0, 255, 255)  # 未稳定，黄色
             else:
-                color = (0, 255, 255)  # 黄色
+                if confidence >= self.min_confidence:
+                    color = (0, 255, 0)  # 绿色
+                else:
+                    color = (0, 255, 255)  # 黄色
             
             cv2.polylines(frame, [points], True, color, 2)
             
             # 添加文本（包含检测方法）
             rect = qr_info['rect']
             method = qr_info.get('method', 'unknown')
-            label = f"{qr_data[:15]}... ({confidence})[{method}]" if len(qr_data) > 15 else f"{qr_data} ({confidence})[{method}]"
+            if self.page_turning_mode:
+                time_visible = current_time - self.qr_first_seen_time.get(qr_data, current_time)
+                status = ""
+                if qr_data == self.last_stable_qr:
+                    status = "稳定"
+                elif self.page_turning_in_progress:
+                    status = "翻页中"
+                else:
+                    status = f"{time_visible:.1f}s"
+                
+                label = f"{qr_data[:10]}.. [{status}]" if len(qr_data) > 10 else f"{qr_data} [{status}]"
+            else:
+                label = f"{qr_data[:15]}... ({confidence})[{method}]" if len(qr_data) > 15 else f"{qr_data} ({confidence})[{method}]"
+            
             cv2.putText(frame, label, (rect.left, rect.top - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
         
@@ -827,6 +908,16 @@ class OptimizedQRCodeScanner:
                              (255, 0, 0), 2)
                 cv2.putText(frame, f"Detection Region ({self.detection_region_scale*100:.0f}%)", 
                            (start_x, start_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            
+            # 在翻页模式下显示状态信息
+            if self.page_turning_mode:
+                status_text = f"翻页模式: {'翻页中' if self.page_turning_in_progress else '稳定'}"
+                cv2.putText(frame, status_text, (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                if self.last_stable_qr:
+                    cv2.putText(frame, f"当前页: {self.last_stable_qr[:15]}", (10, 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         return frame
     
@@ -935,6 +1026,8 @@ class OptimizedQRCodeScanner:
         self.config_manager.set('send_interval', self.send_interval)
         self.config_manager.set('debug_mode', self.debug_mode)
         self.config_manager.set('show_ui', self.show_ui)
+        self.config_manager.set('page_turning_mode', self.page_turning_mode)
+        self.config_manager.set('page_stable_time', self.page_stable_time)
         
         # 保存当前摄像头索引
         current_index = getattr(self, 'current_camera_index', self.config_manager.get('default_camera_index'))
@@ -1023,6 +1116,25 @@ class OptimizedQRCodeScanner:
                             cv2.destroyAllWindows()
                             print("界面已关闭，程序继续在后台运行")
                             print("按Ctrl+C中断程序")
+                    elif key == ord('b'):  # 切换翻页模式
+                        self.page_turning_mode = not self.page_turning_mode
+                        print(f"翻页模式: {'开启' if self.page_turning_mode else '关闭'}")
+                        if self.page_turning_mode:
+                            print("  - 翻页模式下，只有二维码稳定显示后才会发送UDP包")
+                            print(f"  - 稳定时间阈值: {self.page_stable_time}秒")
+                            # 重置翻页检测状态
+                            self.last_stable_qr = None
+                            self.qr_first_seen_time = {}
+                            self.qr_last_seen_time = {}
+                            self.page_turning_in_progress = False
+                    elif key == ord('v'):  # 调整稳定时间阈值
+                        if self.page_stable_time == 0.5:
+                            self.page_stable_time = 1.0
+                        elif self.page_stable_time == 1.0:
+                            self.page_stable_time = 2.0
+                        else:
+                            self.page_stable_time = 0.5
+                        print(f"页面稳定时间阈值: {self.page_stable_time}秒")
                 else:
                     # 无界面模式下，增加短暂延时避免CPU占用过高
                     time.sleep(0.001)
@@ -1104,6 +1216,7 @@ def main():
     print("  - 多尺度检测")
     print("  - 智能结果缓存")
     print("  - 实时性能监控")
+    print("  - 翻页检测模式")
     print("\n基本控制:")
     print("  q: 退出程序")
     print("  d: 切换调试模式")
@@ -1114,6 +1227,8 @@ def main():
     print("  t: 切换自定义检测区域")
     print("  c: 清除检测缓存")
     print("  u: 切换界面显示")
+    print("  b: 切换翻页模式")
+    print("  v: 调整页面稳定时间阈值")
     print("\n摄像头控制:")
     print("  n: 切换到下一个摄像头")
     print("  p: 切换到上一个摄像头")
@@ -1125,6 +1240,17 @@ def main():
     print("  w: 切换警告显示")
     print("  z: 保存当前配置到文件")
     
+    print("\n命令行参数:")
+    print("  --debug                  启用调试模式")
+    print("  --no-ui                  禁用界面显示")
+    print("  --page-turning           启用翻页检测模式")
+    print("  --no-page-turning        禁用翻页检测模式")
+    print("  --stable-time=秒数       设置页面稳定时间阈值")
+    print("  --region=x,y,width,height 设置自定义检测区域")
+    print("  --fps=帧率               设置目标帧率")
+    print("  --config=文件路径        指定配置文件路径")
+    print("  --camera=索引            指定摄像头索引")
+    
     # 解析参数
     resolution = None
     camera_index = None
@@ -1133,6 +1259,8 @@ def main():
     config_file = "camera_config.json"
     show_ui = None
     detection_region = None
+    page_turning_mode = None
+    page_stable_time = None
     
     args = sys.argv[1:]
     i = 0
@@ -1143,6 +1271,19 @@ def main():
         elif args[i] == '--no-ui':
             show_ui = False
             args.pop(i)
+        elif args[i] == '--page-turning':
+            page_turning_mode = True
+            args.pop(i)
+        elif args[i] == '--no-page-turning':
+            page_turning_mode = False
+            args.pop(i)
+        elif args[i].startswith('--stable-time='):
+            try:
+                page_stable_time = float(args[i].replace('--stable-time=', ''))
+                args.pop(i)
+            except ValueError:
+                print(f"警告：无效的稳定时间值")
+                i += 1
         elif args[i].startswith('--region='):
             try:
                 region_str = args[i].replace('--region=', '')
@@ -1212,6 +1353,18 @@ def main():
             config_manager.set('show_ui', show_ui)
             config_manager.save_config()
             print(f"✓ 已更新UI显示设置: {'显示' if show_ui else '不显示'}")
+        
+        # 如果命令行指定了翻页模式，更新配置
+        if page_turning_mode is not None:
+            config_manager.set('page_turning_mode', page_turning_mode)
+            config_manager.save_config()
+            print(f"✓ 已更新翻页模式: {'开启' if page_turning_mode else '关闭'}")
+        
+        # 如果命令行指定了稳定时间阈值，更新配置
+        if page_stable_time is not None:
+            config_manager.set('page_stable_time', page_stable_time)
+            config_manager.save_config()
+            print(f"✓ 已更新页面稳定时间阈值: {page_stable_time}秒")
         
         scanner = OptimizedQRCodeScanner(
             udp_host=UDP_HOST, 
