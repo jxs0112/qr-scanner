@@ -34,12 +34,20 @@ class ConfigManager:
         "send_interval": 1.0,
         "target_fps": 30,
         "debug_mode": False,
+        "show_ui": True,  # 是否显示界面
         "custom_resolutions": {},
         "camera_preferences": {},
         "available_cameras": [],
         "performance": {
             "adaptive_skip_interval": 2,
             "detection_region_scale": 0.4,
+            "detection_region_custom": {  # 自定义检测区域
+                "enabled": False,
+                "x": 0,
+                "y": 0,
+                "width": 0,
+                "height": 0
+            },
             "use_simple_preprocess": True,
             "use_opencv_qr": True,
             "dynamic_resolution": True,
@@ -173,6 +181,7 @@ class OptimizedQRCodeScanner:
         self.udp_port = udp_port or self.config_manager.get('udp_port')
         self.debug_mode = debug_mode if debug_mode is not None else self.config_manager.get('debug_mode')
         self.target_fps = target_fps or self.config_manager.get('target_fps')
+        self.show_ui = self.config_manager.get('show_ui', True)  # 是否显示界面
         
         # 摄像头索引处理
         camera_index = camera_index if camera_index is not None else self.config_manager.get('default_camera_index')
@@ -192,6 +201,15 @@ class OptimizedQRCodeScanner:
         self.frame_skip_count = 0
         self.adaptive_skip_interval = perf_config.get('adaptive_skip_interval', 2)
         self.detection_region_scale = perf_config.get('detection_region_scale', 0.4)
+        
+        # 自定义检测区域
+        detection_region_custom = perf_config.get('detection_region_custom', {})
+        self.detection_region_custom_enabled = detection_region_custom.get('enabled', False)
+        self.detection_region_custom_x = detection_region_custom.get('x', 0)
+        self.detection_region_custom_y = detection_region_custom.get('y', 0)
+        self.detection_region_custom_width = detection_region_custom.get('width', 0)
+        self.detection_region_custom_height = detection_region_custom.get('height', 0)
+        
         self.use_simple_preprocess = perf_config.get('use_simple_preprocess', True)
         self.use_opencv_qr = perf_config.get('use_opencv_qr', True)
         self.dynamic_resolution = perf_config.get('dynamic_resolution', True)
@@ -423,21 +441,45 @@ class OptimizedQRCodeScanner:
     def get_detection_region(self, frame):
         """
         获取检测区域（中心区域，减少计算量）
+        支持自定义区域设置
         """
         h, w = frame.shape[:2]
         
-        # 计算中心区域
-        center_w = int(w * self.detection_region_scale)
-        center_h = int(h * self.detection_region_scale)
-        
-        # 计算起始位置
-        start_x = (w - center_w) // 2
-        start_y = (h - center_h) // 2
-        
-        # 裁剪区域
-        region = frame[start_y:start_y + center_h, start_x:start_x + center_w]
-        
-        return region, (start_x, start_y)
+        if self.detection_region_custom_enabled:
+            # 使用自定义区域
+            x = self.detection_region_custom_x
+            y = self.detection_region_custom_y
+            width = self.detection_region_custom_width
+            height = self.detection_region_custom_height
+            
+            # 如果宽高为0，则使用整个图像宽高
+            if width <= 0:
+                width = w
+            if height <= 0:
+                height = h
+                
+            # 确保区域在图像范围内
+            x = max(0, min(x, w - 10))
+            y = max(0, min(y, h - 10))
+            width = min(width, w - x)
+            height = min(height, h - y)
+            
+            # 裁剪区域
+            region = frame[y:y + height, x:x + width]
+            return region, (x, y)
+        else:
+            # 计算中心区域
+            center_w = int(w * self.detection_region_scale)
+            center_h = int(h * self.detection_region_scale)
+            
+            # 计算起始位置
+            start_x = (w - center_w) // 2
+            start_y = (h - center_h) // 2
+            
+            # 裁剪区域
+            region = frame[start_y:start_y + center_h, start_x:start_x + center_w]
+            
+            return region, (start_x, start_y)
     
     def get_scaled_region(self, frame, scale=1.0):
         """
@@ -756,16 +798,35 @@ class OptimizedQRCodeScanner:
         # 绘制检测区域边框
         if self.debug_mode:
             h, w = frame.shape[:2]
-            center_w = int(w * self.detection_region_scale)
-            center_h = int(h * self.detection_region_scale)
-            start_x = (w - center_w) // 2
-            start_y = (h - center_h) // 2
             
-            cv2.rectangle(frame, (start_x, start_y), 
-                         (start_x + center_w, start_y + center_h), 
-                         (255, 0, 0), 2)
-            cv2.putText(frame, f"Detection Region ({self.detection_region_scale*100:.0f}%)", 
-                       (start_x, start_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            if self.detection_region_custom_enabled:
+                # 绘制自定义检测区域
+                x = self.detection_region_custom_x
+                y = self.detection_region_custom_y
+                width = self.detection_region_custom_width if self.detection_region_custom_width > 0 else w
+                height = self.detection_region_custom_height if self.detection_region_custom_height > 0 else h
+                
+                # 确保区域在图像范围内
+                x = max(0, min(x, w - 10))
+                y = max(0, min(y, h - 10))
+                width = min(width, w - x)
+                height = min(height, h - y)
+                
+                cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 0, 255), 2)
+                cv2.putText(frame, f"Custom Region ({width}x{height})", 
+                           (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            else:
+                # 绘制中心检测区域
+                center_w = int(w * self.detection_region_scale)
+                center_h = int(h * self.detection_region_scale)
+                start_x = (w - center_w) // 2
+                start_y = (h - center_h) // 2
+                
+                cv2.rectangle(frame, (start_x, start_y), 
+                             (start_x + center_w, start_y + center_h), 
+                             (255, 0, 0), 2)
+                cv2.putText(frame, f"Detection Region ({self.detection_region_scale*100:.0f}%)", 
+                           (start_x, start_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
         
         return frame
     
@@ -855,6 +916,13 @@ class OptimizedQRCodeScanner:
         perf_config = {
             'adaptive_skip_interval': self.adaptive_skip_interval,
             'detection_region_scale': self.detection_region_scale,
+            'detection_region_custom': {
+                'enabled': self.detection_region_custom_enabled,
+                'x': self.detection_region_custom_x,
+                'y': self.detection_region_custom_y,
+                'width': self.detection_region_custom_width,
+                'height': self.detection_region_custom_height
+            },
             'use_simple_preprocess': self.use_simple_preprocess,
             'use_opencv_qr': self.use_opencv_qr,
             'dynamic_resolution': self.dynamic_resolution,
@@ -866,6 +934,7 @@ class OptimizedQRCodeScanner:
         self.config_manager.set('performance', perf_config)
         self.config_manager.set('send_interval', self.send_interval)
         self.config_manager.set('debug_mode', self.debug_mode)
+        self.config_manager.set('show_ui', self.show_ui)
         
         # 保存当前摄像头索引
         current_index = getattr(self, 'current_camera_index', self.config_manager.get('default_camera_index'))
@@ -890,8 +959,82 @@ class OptimizedQRCodeScanner:
                 # 处理帧
                 frame = self.process_frame(frame)
                 
-                # 显示
-                cv2.imshow('Optimized QR Scanner V2', frame)
+                # 根据配置决定是否显示界面
+                if self.show_ui:
+                    # 显示
+                    cv2.imshow('Optimized QR Scanner V2', frame)
+                    
+                    # 按键处理
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        break
+                    elif key == ord('d'):
+                        self.debug_mode = not self.debug_mode
+                        print(f"调试模式: {'开启' if self.debug_mode else '关闭'}")
+                    elif key == ord('s'):  # 切换简化预处理
+                        self.use_simple_preprocess = not self.use_simple_preprocess
+                        print(f"简化预处理: {'开启' if self.use_simple_preprocess else '关闭'}")
+                    elif key == ord('o'):  # 切换OpenCV检测器
+                        self.use_opencv_qr = not self.use_opencv_qr
+                        print(f"OpenCV检测器: {'开启' if self.use_opencv_qr else '关闭'}")
+                    elif key == ord('a'):  # 切换自适应优化
+                        self.dynamic_resolution = not self.dynamic_resolution
+                        print(f"自适应优化: {'开启' if self.dynamic_resolution else '关闭'}")
+                    elif key == ord('r'):  # 调整检测区域
+                        if self.detection_region_scale == 0.5:
+                            self.detection_region_scale = 0.7
+                        elif self.detection_region_scale == 0.7:
+                            self.detection_region_scale = 1.0
+                        else:
+                            self.detection_region_scale = 0.5
+                        print(f"检测区域: {self.detection_region_scale*100:.0f}%")
+                    elif key == ord('t'):  # 切换自定义检测区域
+                        self.detection_region_custom_enabled = not self.detection_region_custom_enabled
+                        print(f"自定义检测区域: {'启用' if self.detection_region_custom_enabled else '禁用'}")
+                        if self.detection_region_custom_enabled:
+                            print(f"  位置: ({self.detection_region_custom_x}, {self.detection_region_custom_y}), "
+                                  f"大小: {self.detection_region_custom_width}x{self.detection_region_custom_height}")
+                    elif key == ord('c'):  # 清除缓存
+                        self.detection_cache.clear()
+                        print("缓存已清除")
+                    elif key == ord('i'):  # 显示摄像头信息
+                        self.show_camera_info()
+                    elif key == ord('h'):  # 显示性能提示
+                        self.show_performance_tips()
+                    elif key == ord('w'):  # 切换警告显示
+                        self.show_camera_warning = not self.show_camera_warning
+                        print(f"摄像头警告: {'显示' if self.show_camera_warning else '隐藏'}")
+                    elif key == ord('n'):  # 切换到下一个摄像头
+                        self.switch_camera('next')
+                    elif key == ord('p'):  # 切换到上一个摄像头
+                        self.switch_camera('prev')
+                    elif key == ord('l'):  # 列出可用摄像头
+                        self.list_cameras()
+                    elif key == ord('z'):  # 保存当前配置
+                        self.save_current_config()
+                    elif key == ord('x'):  # 重新检测摄像头
+                        self.config_manager.detect_available_cameras()
+                        self.config_manager.save_config()
+                        print("摄像头检测完成并保存到配置文件")
+                    elif key == ord('u'):  # 切换UI显示
+                        self.show_ui = not self.show_ui
+                        print(f"界面显示: {'开启' if self.show_ui else '关闭'}")
+                        if not self.show_ui:
+                            cv2.destroyAllWindows()
+                            print("界面已关闭，程序继续在后台运行")
+                            print("按Ctrl+C中断程序")
+                else:
+                    # 无界面模式下，增加短暂延时避免CPU占用过高
+                    time.sleep(0.001)
+                    
+                    # 检查是否有中断信号
+                    import select
+                    import sys
+                    # 检查stdin是否有输入，非阻塞方式
+                    if select.select([sys.stdin], [], [], 0)[0]:
+                        cmd = sys.stdin.readline().strip()
+                        if cmd == 'q':
+                            break
                 
                 # FPS计算和性能监控
                 fps_counter += 1
@@ -909,53 +1052,6 @@ class OptimizedQRCodeScanner:
                         self.adaptive_performance_adjust(current_fps)
                     
                     last_fps_time = current_time
-                
-                # 按键处理
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    break
-                elif key == ord('d'):
-                    self.debug_mode = not self.debug_mode
-                    print(f"调试模式: {'开启' if self.debug_mode else '关闭'}")
-                elif key == ord('s'):  # 切换简化预处理
-                    self.use_simple_preprocess = not self.use_simple_preprocess
-                    print(f"简化预处理: {'开启' if self.use_simple_preprocess else '关闭'}")
-                elif key == ord('o'):  # 切换OpenCV检测器
-                    self.use_opencv_qr = not self.use_opencv_qr
-                    print(f"OpenCV检测器: {'开启' if self.use_opencv_qr else '关闭'}")
-                elif key == ord('a'):  # 切换自适应优化
-                    self.dynamic_resolution = not self.dynamic_resolution
-                    print(f"自适应优化: {'开启' if self.dynamic_resolution else '关闭'}")
-                elif key == ord('r'):  # 调整检测区域
-                    if self.detection_region_scale == 0.5:
-                        self.detection_region_scale = 0.7
-                    elif self.detection_region_scale == 0.7:
-                        self.detection_region_scale = 1.0
-                    else:
-                        self.detection_region_scale = 0.5
-                    print(f"检测区域: {self.detection_region_scale*100:.0f}%")
-                elif key == ord('c'):  # 清除缓存
-                    self.detection_cache.clear()
-                    print("缓存已清除")
-                elif key == ord('i'):  # 显示摄像头信息
-                    self.show_camera_info()
-                elif key == ord('h'):  # 显示性能提示
-                    self.show_performance_tips()
-                elif key == ord('w'):  # 切换警告显示
-                    self.show_camera_warning = not self.show_camera_warning
-                    print(f"摄像头警告: {'显示' if self.show_camera_warning else '隐藏'}")
-                elif key == ord('n'):  # 切换到下一个摄像头
-                    self.switch_camera('next')
-                elif key == ord('p'):  # 切换到上一个摄像头
-                    self.switch_camera('prev')
-                elif key == ord('l'):  # 列出可用摄像头
-                    self.list_cameras()
-                elif key == ord('z'):  # 保存当前配置
-                    self.save_current_config()
-                elif key == ord('x'):  # 重新检测摄像头
-                    self.config_manager.detect_available_cameras()
-                    self.config_manager.save_config()
-                    print("摄像头检测完成并保存到配置文件")
                     
         except KeyboardInterrupt:
             print("\n程序被用户中断")
@@ -968,9 +1064,32 @@ class OptimizedQRCodeScanner:
         """清理资源"""
         print("正在清理资源...")
         self.cap.release()
-        cv2.destroyAllWindows()
+        if self.show_ui:
+            cv2.destroyAllWindows()
         self.socket.close()
         print("资源清理完成")
+
+    def set_custom_detection_region(self, x, y, width, height, enabled=True):
+        """
+        设置自定义检测区域
+        
+        参数:
+            x, y: 区域左上角坐标
+            width, height: 区域宽高
+            enabled: 是否启用自定义区域
+        """
+        self.detection_region_custom_enabled = enabled
+        self.detection_region_custom_x = x
+        self.detection_region_custom_y = y
+        self.detection_region_custom_width = width
+        self.detection_region_custom_height = height
+        
+        print(f"✓ 已设置检测区域: {'启用' if enabled else '禁用'}")
+        if enabled:
+            print(f"  位置: ({x}, {y}), 大小: {width}x{height}")
+        
+        # 自动保存配置
+        self.save_current_config()
 
 def main():
     """主函数"""
@@ -992,7 +1111,9 @@ def main():
     print("  o: 切换OpenCV检测器")
     print("  a: 切换自适应优化")
     print("  r: 调整检测区域大小")
+    print("  t: 切换自定义检测区域")
     print("  c: 清除检测缓存")
+    print("  u: 切换界面显示")
     print("\n摄像头控制:")
     print("  n: 切换到下一个摄像头")
     print("  p: 切换到上一个摄像头")
@@ -1010,6 +1131,8 @@ def main():
     debug_mode = None
     target_fps = None
     config_file = "camera_config.json"
+    show_ui = None
+    detection_region = None
     
     args = sys.argv[1:]
     i = 0
@@ -1017,6 +1140,28 @@ def main():
         if args[i] == '--debug':
             debug_mode = True
             args.pop(i)
+        elif args[i] == '--no-ui':
+            show_ui = False
+            args.pop(i)
+        elif args[i].startswith('--region='):
+            try:
+                region_str = args[i].replace('--region=', '')
+                # 格式: x,y,width,height
+                parts = [int(p) for p in region_str.split(',')]
+                if len(parts) == 4:
+                    detection_region = {
+                        'enabled': True,
+                        'x': parts[0],
+                        'y': parts[1],
+                        'width': parts[2],
+                        'height': parts[3]
+                    }
+                else:
+                    print(f"警告：无效的检测区域格式，应为 x,y,width,height")
+                args.pop(i)
+            except ValueError:
+                print(f"警告：无效的检测区域格式")
+                i += 1
         elif args[i].startswith('--fps='):
             try:
                 target_fps = int(args[i].replace('--fps=', ''))
@@ -1052,6 +1197,22 @@ def main():
     print(f"\n配置文件: {config_file}")
     
     try:
+        # 先加载配置文件
+        config_manager = ConfigManager(config_file)
+        
+        # 如果命令行指定了检测区域，更新配置
+        if detection_region:
+            config_manager.set('performance.detection_region_custom', detection_region)
+            config_manager.save_config()
+            print(f"✓ 已更新检测区域设置: x={detection_region['x']}, y={detection_region['y']}, "
+                  f"width={detection_region['width']}, height={detection_region['height']}")
+        
+        # 如果命令行指定了UI显示设置，更新配置
+        if show_ui is not None:
+            config_manager.set('show_ui', show_ui)
+            config_manager.save_config()
+            print(f"✓ 已更新UI显示设置: {'显示' if show_ui else '不显示'}")
+        
         scanner = OptimizedQRCodeScanner(
             udp_host=UDP_HOST, 
             udp_port=UDP_PORT, 
