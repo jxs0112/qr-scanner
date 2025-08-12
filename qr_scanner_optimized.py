@@ -186,6 +186,7 @@ class OptimizedQRCodeScanner:
         # 翻页检测相关参数
         self.page_turning_mode = self.config_manager.get('page_turning_mode', False)  # 翻页检测模式
         self.page_stable_time = self.config_manager.get('page_stable_time', 1.0)  # 页面稳定时间(秒)
+        self.send_only_on_page_change = self.config_manager.get('send_only_on_page_change', True)  # 只在页面变化时发送UDP包
         self.last_stable_qr = None  # 上次稳定的二维码
         self.qr_first_seen_time = {}  # 记录二维码首次出现时间
         self.qr_last_seen_time = {}  # 记录二维码最后一次出现时间
@@ -751,6 +752,10 @@ class OptimizedQRCodeScanner:
         current_time = time.time()
         current_qr_data = set(qr['data'] for qr in detected_qr_codes)
         
+        # 翻页检测变量
+        page_changed = False
+        new_stable_qr = None
+        
         # 翻页检测：检查不在当前帧中的二维码
         if self.page_turning_mode:
             disappeared_qrs = set()
@@ -793,6 +798,12 @@ class OptimizedQRCodeScanner:
                     if self.last_stable_qr is not None:
                         print(f"📖 Page Turn Complete: From '{self.last_stable_qr}' to '{qr_data}'")
                         self.page_turning_in_progress = False
+                        page_changed = True
+                        new_stable_qr = qr_data
+                    else:
+                        # 首次检测到稳定二维码
+                        page_changed = True
+                        new_stable_qr = qr_data
                     self.last_stable_qr = qr_data
         
         # 减少未检测到的二维码的信心度
@@ -805,20 +816,31 @@ class OptimizedQRCodeScanner:
         # 处理检测到的二维码
         for qr_info in detected_qr_codes:
             qr_data = qr_info['data']
-            current_time = time.time()
             
             confidence = self.qr_confidence.get(qr_data, 0)
             
             # 翻页检测：判断是否可以发送UDP包
             send_allowed = True
             if self.page_turning_mode:
-                # 只有当二维码稳定显示且不在翻页过程中才发送
+                # 只有当二维码稳定显示且不在翻页过程中，并且页面发生变化时才发送
                 is_stable = qr_data == self.last_stable_qr
                 if not is_stable or self.page_turning_in_progress:
                     send_allowed = False
                     status = "Turning" if self.page_turning_in_progress else "Not stable"
                     if self.debug_mode:
                         print(f"⏳ Skip sending QR code '{qr_data}' ({status})")
+                elif self.send_only_on_page_change:
+                    # 如果配置为只在页面变化时发送
+                    if qr_data == new_stable_qr and page_changed:
+                        # 页面变化且是新的稳定二维码，允许发送
+                        send_allowed = True
+                        if self.debug_mode:
+                            print(f"📄 New page detected: '{qr_data}'")
+                    else:
+                        # 页面没有变化，不重复发送
+                        send_allowed = False
+                        if self.debug_mode:
+                            print(f"⏹️ Page unchanged, skip sending: '{qr_data}'")
             
             should_send = (
                 send_allowed and
@@ -826,11 +848,19 @@ class OptimizedQRCodeScanner:
                 (qr_data != self.last_qr_data or current_time - self.last_send_time > self.send_interval)
             )
             
+            # 在翻页模式下，如果是新页面，则强制发送
+            if self.page_turning_mode and self.send_only_on_page_change and page_changed and qr_data == new_stable_qr:
+                should_send = True
+            
             if should_send:
                 self.send_udp_packet(qr_data)
                 self.last_qr_data = qr_data
                 self.last_send_time = current_time
-                print(f"✓ 检测成功 (信心度: {confidence}, 方法: {qr_info.get('method', 'unknown')})")
+                print(f"✓ Detection success (confidence: {confidence}, method: {qr_info.get('method', 'unknown')})")
+                # 重置页面变化标志
+                if self.page_turning_mode:
+                    page_changed = False
+                    new_stable_qr = None
             
             # 绘制边框
             points = qr_info['polygon']
@@ -1029,6 +1059,7 @@ class OptimizedQRCodeScanner:
         self.config_manager.set('show_ui', self.show_ui)
         self.config_manager.set('page_turning_mode', self.page_turning_mode)
         self.config_manager.set('page_stable_time', self.page_stable_time)
+        self.config_manager.set('send_only_on_page_change', self.send_only_on_page_change)
         
         # 保存当前摄像头索引
         current_index = getattr(self, 'current_camera_index', self.config_manager.get('default_camera_index'))
@@ -1136,6 +1167,13 @@ class OptimizedQRCodeScanner:
                         else:
                             self.page_stable_time = 0.5
                         print(f"Page Stability Threshold: {self.page_stable_time} seconds")
+                    elif key == ord('m'):  # 切换是否只在页面变化时发送UDP包
+                        self.send_only_on_page_change = not self.send_only_on_page_change
+                        print(f"Send Only On Page Change: {'Enabled' if self.send_only_on_page_change else 'Disabled'}")
+                        if self.send_only_on_page_change:
+                            print("  - UDP packets will only be sent when page changes")
+                        else:
+                            print("  - UDP packets will be sent periodically based on send_interval")
                 else:
                     # 无界面模式下，增加短暂延时避免CPU占用过高
                     time.sleep(0.001)
@@ -1230,6 +1268,7 @@ def main():
     print("  u: 切换界面显示")
     print("  b: 切换翻页模式")
     print("  v: 调整页面稳定时间阈值")
+    print("  m: 切换是否只在页面变化时发送UDP包")
     print("\n摄像头控制:")
     print("  n: 切换到下一个摄像头")
     print("  p: 切换到上一个摄像头")
@@ -1247,6 +1286,8 @@ def main():
     print("  --page-turning           启用翻页检测模式")
     print("  --no-page-turning        禁用翻页检测模式")
     print("  --stable-time=秒数       设置页面稳定时间阈值")
+    print("  --send-only-on-change    只在页面变化时发送UDP包")
+    print("  --send-periodically      定期发送UDP包（即使页面未变化）")
     print("  --region=x,y,width,height 设置自定义检测区域")
     print("  --fps=帧率               设置目标帧率")
     print("  --config=文件路径        指定配置文件路径")
@@ -1262,6 +1303,7 @@ def main():
     detection_region = None
     page_turning_mode = None
     page_stable_time = None
+    page_turning_send_mode = None
     
     args = sys.argv[1:]
     i = 0
@@ -1285,6 +1327,12 @@ def main():
             except ValueError:
                 print(f"警告：无效的稳定时间值")
                 i += 1
+        elif args[i] == '--send-only-on-change':
+            page_turning_send_mode = True
+            args.pop(i)
+        elif args[i] == '--send-periodically':
+            page_turning_send_mode = False
+            args.pop(i)
         elif args[i].startswith('--region='):
             try:
                 region_str = args[i].replace('--region=', '')
@@ -1366,6 +1414,12 @@ def main():
             config_manager.set('page_stable_time', page_stable_time)
             config_manager.save_config()
             print(f"✓ 已更新页面稳定时间阈值: {page_stable_time}秒")
+            
+        # 如果命令行指定了页面变化发送模式，更新配置
+        if page_turning_send_mode is not None:
+            config_manager.set('send_only_on_page_change', page_turning_send_mode)
+            config_manager.save_config()
+            print(f"✓ 已更新页面变化发送模式: {'只在页面变化时发送' if page_turning_send_mode else '定期发送'}")
         
         scanner = OptimizedQRCodeScanner(
             udp_host=UDP_HOST, 
