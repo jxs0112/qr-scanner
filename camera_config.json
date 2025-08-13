@@ -6,7 +6,7 @@
   "send_interval": 1.5,
   "target_fps": 30,
   "debug_mode": false,
-  "show_ui": true,
+  "show_ui": false,
   "page_turning_mode": true,
   "page_stable_time": 1.0,
   "send_only_on_page_change": true,

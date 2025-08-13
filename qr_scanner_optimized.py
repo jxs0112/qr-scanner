@@ -1179,13 +1179,28 @@ class OptimizedQRCodeScanner:
                     time.sleep(0.001)
                     
                     # 检查是否有中断信号
-                    import select
-                    import sys
-                    # 检查stdin是否有输入，非阻塞方式
-                    if select.select([sys.stdin], [], [], 0)[0]:
-                        cmd = sys.stdin.readline().strip()
-                        if cmd == 'q':
-                            break
+                    try:
+                        import select
+                        import sys
+                        import os
+                        
+                        # 检测操作系统类型
+                        if os.name == 'nt':  # Windows系统
+                            import msvcrt
+                            # 非阻塞方式检查是否有按键
+                            if msvcrt.kbhit():
+                                if msvcrt.getch() in (b'q', b'Q'):
+                                    break
+                        else:  # 类Unix系统
+                            # 检查stdin是否有输入，非阻塞方式
+                            if select.select([sys.stdin], [], [], 0)[0]:
+                                cmd = sys.stdin.readline().strip()
+                                if cmd == 'q':
+                                    break
+                    except Exception as e:
+                        # 如果检查输入失败，忽略错误继续运行
+                        if self.debug_mode:
+                            print(f"检查输入错误 (忽略): {e}")
                 
                 # FPS计算和性能监控
                 fps_counter += 1
